@@ -3,12 +3,14 @@ use std::fs::{self, File};
 use std::io::{self, BufRead};
 use std::path::Path;
 use std::time::Duration;
+use std::collections::HashMap;
 
 #[derive(Serialize)]
 struct ApiRequest {
     model: String,
     messages: Vec<Message>,
     temperature: f32,
+    stream: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -19,7 +21,10 @@ struct Message {
 
 #[derive(Deserialize)]
 struct ApiResponse {
-    choices: Vec<Choice>,
+    message: Option<Message>,
+    choices: Option<Vec<Choice>>,
+    #[serde(flatten)]
+    extra: std::collections::HashMap<String, serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -33,7 +38,7 @@ struct AnalysisResult {
     explanation: String,
 }
 
-pub async fn analyze_text_file(text_file_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn analyze_text_file(text_file_path: &Path, model_name: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
         .build()?;
@@ -44,6 +49,8 @@ pub async fn analyze_text_file(text_file_path: &Path) -> Result<(), Box<dyn std:
     let mut results: Vec<AnalysisResult> = Vec::new(); // ここに移動
 
     println!("Starting analysis with LM Studio. This may take a while...");
+
+    let actual_model_name = model_name.unwrap_or_else(|| "gemma3:27b".to_string());
 
     for (index, line) in reader.lines().enumerate() {
         let sentence = line?;
@@ -56,12 +63,13 @@ pub async fn analyze_text_file(text_file_path: &Path) -> Result<(), Box<dyn std:
         let system_prompt = "あなたは英語文法のエキスパートです。次のセンテンスについて、まず和訳を示し、その後文法について解説してください。".to_string();
         
         let request_body = ApiRequest {
-            model: "gemma3:27b".to_string(),
+            model: actual_model_name.clone(),
             messages: vec![
                 Message { role: "system".to_string(), content: system_prompt },
                 Message { role: "user".to_string(), content: sentence.clone() },
             ],
             temperature: 0.7,
+            stream: false,
         };
 
         let res = client
@@ -75,10 +83,16 @@ pub async fn analyze_text_file(text_file_path: &Path) -> Result<(), Box<dyn std:
             Ok(response) => {
                 if response.status().is_success() {
                     let api_response = response.json::<ApiResponse>().await?;
-                    let explanation = if let Some(choice) = api_response.choices.get(0) {
-                        choice.message.content.clone()
+                    let explanation = if let Some(message) = api_response.message {
+                        message.content
+                    } else if let Some(choices) = api_response.choices {
+                        if let Some(choice) = choices.get(0) {
+                            choice.message.content.clone()
+                        } else {
+                            "No explanation received from choices.".to_string()
+                        }
                     } else {
-                        "No explanation received.".to_string()
+                        "No explanation received (neither message nor choices found).".to_string()
                     };
                     results.push(AnalysisResult {
                         original_sentence: sentence,

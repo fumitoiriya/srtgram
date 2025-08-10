@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::env;
 use std::io::{self, ErrorKind};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 // すべてのモジュールを宣言
 mod analyzer;
@@ -19,6 +19,10 @@ struct Args {
     /// YouTube video URL to download subtitles from.
     #[arg(short = 'y', long, value_name = "URL")]
     youtube_url: Option<String>,
+
+    /// Model to use for analysis.
+    #[arg(short = 'm', long, value_name = "MODEL")]
+    model: Option<String>,
 }
 
 #[tokio::main]
@@ -56,7 +60,7 @@ async fn main() -> io::Result<()> {
     // 4. 生成されたテキストファイルをollamaで解析し、JSONファイルを生成
     println!("\nStep 2: Analyzing text file with ollama...");
     let json_file_path = text_file_path.with_extension("analysis.json");
-    if let Err(e) = analyzer::analyze_text_file(&text_file_path).await {
+    if let Err(e) = analyzer::analyze_text_file(&text_file_path, args.model).await {
         eprintln!("An error occurred during analysis: {}", e);
         // エラーが発生しても続行する
     }
