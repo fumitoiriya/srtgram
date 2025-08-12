@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use crate::parser::Subtitle;
 
 #[derive(Serialize)]
@@ -16,6 +16,10 @@ struct ApiRequest {
 #[derive(Deserialize)]
 struct ApiResponse {
     response: String,
+    #[serde(default)]
+    eval_count: Option<u64>,
+    #[serde(default)]
+    eval_duration: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -76,16 +80,31 @@ pub async fn analyze_sentences_from_json(
             stream: false,
         };
 
+        let start_time = Instant::now();
         let res = client
             .post("http://localhost:11434/api/generate")
             .json(&request_body)
             .send()
             .await;
+        let elapsed_time = start_time.elapsed();
 
         let result = match res {
             Ok(response) => {
                 if response.status().is_success() {
                     let api_response = response.json::<ApiResponse>().await?;
+                    print!("  Response time: {:.2?},", elapsed_time);
+
+                    if let (Some(eval_count), Some(eval_duration)) = (api_response.eval_count, api_response.eval_duration) {
+                        if eval_duration > 0 {
+                            let tokens_per_second = (eval_count as f64 / eval_duration as f64) * 1_000_000_000.0;
+                            println!("  Tokens/s: {:.2}", tokens_per_second);
+                        } else {
+                            println!("  Tokens/s: N/A (eval_duration was zero)");
+                        }
+                    } else {
+                        println!("  Tokens/s: N/A (eval_count or eval_duration not available)");
+                    }
+
                     AnalysisResult {
                         timestamp: subtitle.timestamp.clone(),
                         original_sentence: sentence.clone(),
