@@ -1,13 +1,16 @@
-use pulldown_cmark::{html, Parser};
-use serde::Deserialize;
-use std::fs;
-use std::io::{self, Write};
+use pulldown_cmark::{html, Options, Parser};
+use regex::Regex;
+use std::fs::{self, File};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
+use crate::analyzer::AnalysisResult;
 
-#[derive(Deserialize)]
-struct AnalysisResult {
-    original_sentence: String,
-    explanation: String,
+fn get_youtube_embed_url(url: &str) -> Option<String> {
+    let re = Regex::new(r"(?:watch\?v=|youtu\.be/)([\w-]+)").unwrap();
+    re.captures(url).and_then(|cap| {
+        cap.get(1)
+            .map(|match_| format!("https://www.youtube.com/embed/{}", match_.as_str()))
+    })
 }
 
 fn escape_html(text: &str) -> String {
@@ -15,18 +18,31 @@ fn escape_html(text: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
-        .replace('\'', "&#39;")
+        .replace("'", "&#39;")
 }
 
-pub fn generate_html_from_json(json_path: &Path) -> io::Result<()> {
-    let json_content = fs::read_to_string(json_path)?;
-    let results: Vec<AnalysisResult> = serde_json::from_str(&json_content)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+pub fn generate_html_from_jsonl(
+    jsonl_path: &Path,
+    youtube_url: Option<&str>,
+    output_dir: &Path,
+) -> io::Result<()> {
+    let file = File::open(jsonl_path)?;
+    let reader = BufReader::new(file);
 
-    let output_path = json_path.with_extension("html");
+    let mut results: Vec<AnalysisResult> = Vec::new();
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Ok(result) = serde_json::from_str(&line) {
+            results.push(result);
+        }
+    }
+
+    let output_path = output_dir.join("index.html");
     let mut file = fs::File::create(&output_path)?;
 
-    // --- HTMLとCSSのヘッダー --- 
     let head_html = r#"<!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -34,9 +50,14 @@ pub fn generate_html_from_json(json_path: &Path) -> io::Result<()> {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SRT文法解析ビューア</title>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; background-color: #f4f4f9; color: #333; margin: 0; padding: 20px; }
+        html, body { height: 100%; margin: 0; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #333; }
+        #main-container { display: flex; flex-direction: column; height: 100vh; }
+        #video-container { display: flex; justify-content: center; align-items: center; flex-shrink: 0; background: #000; padding: 10px; gap: 10px; }
+        #video-container iframe { width: 100%; max-width: 800px; aspect-ratio: 16 / 9; border: none; }
+        #video-container img { max-width: 240px; max-height: 135px; object-fit: cover; border-radius: 8px; }
+        #results-wrapper { flex-grow: 1; overflow-y: auto; background-color: #f4f4f9; }
+        #container { max-width: 800px; margin: 0 auto; background-color: #fff; padding: 25px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-top: 20px; margin-bottom: 20px; }
         h1 { color: #2c3e50; text-align: center; }
-        #container { max-width: 800px; margin: 0 auto; background-color: #fff; padding: 25px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
         .entry { border-bottom: 1px solid #eee; padding: 15px 0; }
         .entry:last-child { border-bottom: none; }
         .sentence { font-weight: bold; font-size: 1.2em; color: #34495e; margin-bottom: 10px; cursor: pointer; user-select: none; position: relative; padding-left: 20px; }
@@ -52,46 +73,75 @@ pub fn generate_html_from_json(json_path: &Path) -> io::Result<()> {
         .explanation pre { background-color: #2d2d2d; color: #f1f1f1; padding: 1em; border-radius: 5px; overflow-x: auto; }
         .explanation pre code { background-color: transparent; padding: 0; }
         .explanation blockquote { padding: 0 1em; color: #6a737d; border-left: 0.25em solid #dfe2e5; }
+        .timestamp { font-size: 0.8rem; color: #888; margin-right: 12px; font-weight: normal; background-color: #f0f0f0; padding: 2px 6px; border-radius: 4px; }
+        .original-text { font-weight: bold; }
     </style>
 </head>
 <body>
-    <div id="container">
-        <h1>SRT文法解析ビューア</h1>
-        <p style="text-align:center;">各英文をクリックすると、解説が開閉します。</p>
-        <div id="results">
+<div id="main-container">
 "#;
     file.write_all(head_html.as_bytes())?;
 
-    // --- 各エントリを処理 --- 
+    if let Some(url_str) = youtube_url {
+        writeln!(file, "    <div id=\"video-container\">")?;
+        let thumbnail_path = Path::new("thumbnail.png");
+        if thumbnail_path.exists() {
+            writeln!(file, "        <img src=\"thumbnail.png\" alt=\"Video Thumbnail\">")?;
+        }
+        if let Some(embed_url) = get_youtube_embed_url(url_str) {
+            writeln!(
+                file,
+                "        <iframe src=\"{}\" allow=\"accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture\" allowfullscreen></iframe>",
+                embed_url
+            )?;
+        }
+        writeln!(file, "    </div>")?;
+    }
+
+    writeln!(file, "    <div id=\"results-wrapper\">")?;
+    writeln!(file, "        <div id=\"container\">")?;
+    writeln!(file, "            <h1>SRT文法解析ビューア</h1>")?;
+    writeln!(file, "            <p style=\"text-align:center;\">各英文をクリックすると、解説が開閉します。</p>
+            <div id=\"results\">")?;
+
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_TABLES);
+
     for item in results {
-        let parser = Parser::new(&item.explanation);
+        let parser = Parser::new_ext(&item.explanation, options);
         let mut explanation_html = String::new();
         html::push_html(&mut explanation_html, parser);
 
-        writeln!(file, "            <div class=\"entry\">")?;
-        writeln!(file, "                <div class=\"sentence\">{}</div>", escape_html(&item.original_sentence))?;
-        writeln!(file, "                <div class=\"explanation\">{}</div>", explanation_html)?;
-        writeln!(file, "            </div>")?;
+        writeln!(file, "                <div class=\"entry\">")?;
+        writeln!(
+            file,
+            "                    <div class=\"sentence\"><span class=\"timestamp\">{}</span><span class=\"original-text\">{}</span></div>",
+            escape_html(&item.timestamp),
+            escape_html(&item.original_sentence)
+        )?;
+        writeln!(file, "                    <div class=\"explanation\">{}</div>", explanation_html)?;
+        writeln!(file, "                </div>")?;
     }
 
-    // --- HTMLのフッターとJavaScript --- 
     let foot_html = r#"
+            </div>
         </div>
     </div>
-    <script>
-        document.addEventListener('DOMContentLoaded', () => {
-            const sentences = document.querySelectorAll('.sentence');
-            sentences.forEach(sentence => {
-                sentence.addEventListener('click', () => {
-                    sentence.classList.toggle('active');
-                    const explanation = sentence.nextElementSibling;
-                    if (explanation) {
-                        explanation.classList.toggle('visible');
-                    }
-                });
+</div>
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+        const sentences = document.querySelectorAll('.sentence');
+        sentences.forEach(sentence => {
+            sentence.addEventListener('click', () => {
+                sentence.classList.toggle('active');
+                const explanation = sentence.nextElementSibling;
+                if (explanation) {
+                    explanation.classList.toggle('visible');
+                }
             });
         });
-    </script>
+    });
+</script>
 </body>
 </html>"#;
     file.write_all(foot_html.as_bytes())?;

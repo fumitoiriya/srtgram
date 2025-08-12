@@ -1,56 +1,58 @@
-use std::io::{self, ErrorKind};
-use std::path::PathBuf;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Downloads English SRT subtitles from a given YouTube URL.
-///
-/// This function uses the external `yt-dlp` command-line tool.
-/// It saves the downloaded subtitle to a file named `subtitle.srt.en.srt`
-/// in the current working directory.
-///
-/// # Arguments
-/// * `youtube_url` - The URL of the YouTube video.
-///
-/// # Returns
-/// A `Result` containing the `PathBuf` to the downloaded subtitle file,
-/// or an `io::Error` if `yt-dlp` is not found or the download fails.
-pub async fn download_youtube_subtitles(youtube_url: &str) -> io::Result<PathBuf> {
-    println!("Attempting to download subtitles from YouTube: {}", youtube_url);
+pub async fn download_youtube_subtitles(url: &str, output_dir: &Path) -> io::Result<PathBuf> {
+    println!("Attempting to download subtitles from YouTube: {}", url);
 
-    // yt-dlpの存在チェック
-    if let Err(_) = Command::new("yt-dlp").arg("--version").output() {
-        eprintln!("Error: 'yt-dlp' not found. Please install yt-dlp to use YouTube subtitle download feature.");
-        eprintln!("  (e.g., pip install yt-dlp or brew install yt-dlp)");
-        return Err(io::Error::new(ErrorKind::NotFound, "yt-dlp not found."));
-    }
+    // yt-dlpにファイル名を完全に任せるため、-oオプションはテンプレートを使う
+    // -Pでディレクトリを指定し、-oでシンプルなファイル名テンプレートを使う
+    let output_template = "subtitle"; // yt-dlpが拡張子を付与する
 
-    // ダウンロードした字幕の保存先ファイル名 (yt-dlpが自動で言語コードと拡張子を付与するため、それに合わせる)
-    let base_filename = "subtitle";
-    let downloaded_subtitle_filename = format!("{}.en.srt", base_filename);
-    let downloaded_subtitle_path = PathBuf::from(downloaded_subtitle_filename);
-
-    // yt-dlpで字幕をダウンロード
     let output = Command::new("yt-dlp")
-        .arg("--write-auto-subs") // 自動生成字幕も対象に含める
+        .arg("--write-auto-subs") // User's fix
         .arg("--sub-lang")
-        .arg("en") // 英語字幕を指定
+        .arg("en")
         .arg("--sub-format")
         .arg("srt")
-        .arg("--skip-download")
-        .arg("--output")
-        .arg(base_filename) // ここはベースファイル名のみ指定
-        .arg(youtube_url)
+        .arg("--skip-download") // Keep this
+        .arg("-P") // Specify output directory
+        .arg(output_dir.to_str().unwrap())
+        .arg("-o") // Specify output filename template
+        .arg(output_template)
+        .arg(url)
         .output()?;
 
-    // yt-dlpの標準出力と標準エラー出力を表示
-    println!("yt-dlp Stdout:\n{}", String::from_utf8_lossy(&output.stdout));
-    eprintln!("yt-dlp Stderr:\n{}", String::from_utf8_lossy(&output.stderr));
-
     if !output.status.success() {
-        eprintln!("Error downloading subtitles:");
-        return Err(io::Error::new(ErrorKind::Other, "Failed to download subtitles."));
+        eprintln!("yt-dlp failed:\nStdout: {}\nStderr: {}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        return Err(io::Error::new(io::ErrorKind::Other, "yt-dlp failed to download subtitles."));
     }
 
-    println!("Subtitles downloaded to: {}", downloaded_subtitle_path.display());
-    Ok(downloaded_subtitle_path)
+    let stdout_str = String::from_utf8_lossy(&output.stdout);
+    let mut final_srt_path = PathBuf::new(); // Initialize as empty
+
+    // stdoutから "Destination: " の行を探し、ファイル名を抽出する
+    for line in stdout_str.lines() {
+        if line.contains("Destination:") && line.contains(".srt") {
+            if let Some(start_index) = line.find("Destination: ") {
+                let file_name_str = line[start_index + "Destination: ".len()..].trim();
+
+                break;
+            }
+        }
+    }
+
+    // もしstdoutからファイル名が抽出できなかった場合、デフォルトのパスを試す
+    if final_srt_path.as_os_str().is_empty() {
+        final_srt_path = output_dir.join("subtitle.srt"); // Fallback to expected name
+        // もしそれでも見つからなければ、subtitle.en.srtも試す
+        if !final_srt_path.exists() {
+            final_srt_path = output_dir.join("subtitle.en.srt");
+        }
+    }
+
+
+    println!("Subtitles downloaded to: {}", final_srt_path.display());
+
+    Ok(final_srt_path)
 }

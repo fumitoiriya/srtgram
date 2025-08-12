@@ -1,79 +1,92 @@
 use clap::Parser;
+use regex::Regex;
 use std::env;
+use std::fs;
 use std::io::{self, ErrorKind};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-// すべてのモジュールを宣言
 mod analyzer;
 mod html_generator;
-mod parser;
+pub mod parser;
 mod youtube_downloader;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Path to a local SRT file.
     #[arg(short = 'l', long, value_name = "FILE")]
     local_file: Option<String>,
 
-    /// YouTube video URL to download subtitles from.
     #[arg(short = 'y', long, value_name = "URL")]
     youtube_url: Option<String>,
 
-    /// Model to use for analysis.
     #[arg(short = 'm', long, value_name = "MODEL")]
     model: Option<String>,
+
+    #[arg(long, value_name = "LIMIT")]
+    limit: Option<usize>,
+}
+
+fn get_youtube_id(url: &str) -> Option<String> {
+    let re = Regex::new(r"(?:watch\?v=|youtu\.be/)([\w-]+)").unwrap();
+    re.captures(url).and_then(|cap| cap.get(1).map(|m| m.as_str().to_string()))
+}
+
+fn create_output_directory(base_name: &str) -> io::Result<PathBuf> {
+    let mut path = PathBuf::from(base_name);
+    if path.exists() {
+        let mut i = 2;
+        loop {
+            let new_name = format!("{}_{:02}", base_name, i);
+            path = PathBuf::from(new_name);
+            if !path.exists() {
+                break;
+            }
+            i += 1;
+        }
+    }
+    fs::create_dir_all(&path)?;
+    Ok(path)
 }
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
     let args = Args::parse();
 
-    let input_path: PathBuf;
-
-    if let Some(local_file_str) = args.local_file {
-        input_path = PathBuf::from(local_file_str);
-        if !input_path.exists() {
-            eprintln!("Error: Local file not found at '{}'", input_path.display());
-            return Err(io::Error::new(ErrorKind::NotFound, "Local file not found."));
-        }
-    } else if let Some(youtube_url) = args.youtube_url {
-        input_path = youtube_downloader::download_youtube_subtitles(&youtube_url).await?;
+    let base_name = if let Some(local_file) = &args.local_file {
+        PathBuf::from(local_file).file_stem().unwrap_or_default().to_string_lossy().to_string()
+    } else if let Some(youtube_url) = &args.youtube_url {
+        get_youtube_id(youtube_url).ok_or_else(|| io::Error::new(ErrorKind::InvalidInput, "Invalid YouTube URL"))?
     } else {
-        eprintln!("Usage: {} -l <FILE> | -y <URL>", env::args().next().unwrap());
+        eprintln!("Usage: srtgram -l <FILE> | -y <URL>");
         return Err(io::Error::new(ErrorKind::InvalidInput, "No input specified."));
-    }
-
-    // 3. SRTファイルを解析してテキストファイルを生成
-    println!("Step 1: Parsing SRT file...");
-    let text_file_path = match parser::process_srt_file(&input_path) {
-        Ok(path) => {
-            println!("Successfully created text file at {}", path.display());
-            path
-        }
-        Err(e) => {
-            eprintln!("Failed to process SRT file: {}", e);
-            return Err(e);
-        }
     };
 
-    // 4. 生成されたテキストファイルをollamaで解析し、JSONファイルを生成
-    println!("\nStep 2: Analyzing text file with ollama...");
-    let json_file_path = text_file_path.with_extension("analysis.json");
-    if let Err(e) = analyzer::analyze_text_file(&text_file_path, args.model).await {
-        eprintln!("An error occurred during analysis: {}", e);
-        // エラーが発生しても続行する
-    }
+    let output_dir = create_output_directory(&base_name)?;
+    println!("Output will be saved in: {}", output_dir.display());
 
-    // 5. 生成されたJSONファイルからHTMLファイルを生成
-    println!("\nStep 3: Generating HTML viewer...");
-    if let Err(e) = html_generator::generate_html_from_json(&json_file_path) {
-        eprintln!("Failed to generate HTML file: {}", e);
-        return Err(e);
-    }
+    let (srt_path, youtube_url_opt) = if let Some(local_file) = &args.local_file {
+        let path = PathBuf::from(local_file);
+        let new_srt_path = output_dir.join(path.file_name().unwrap());
+        fs::copy(&path, &new_srt_path)?;
+        (new_srt_path, None)
+    } else if let Some(youtube_url) = &args.youtube_url {
+        let downloaded_srt_path = youtube_downloader::download_youtube_subtitles(youtube_url, &output_dir).await?;
+        (downloaded_srt_path, Some(youtube_url.clone()))
+    } else {
+        // This branch is technically unreachable due to the check above, but included for completeness
+        return Err(io::Error::new(ErrorKind::InvalidInput, "No input specified."));
+    };
+
+
+    let sentences_json_path = parser::process_srt_file(&srt_path, &output_dir)?;
+
+    analyzer::analyze_sentences_from_json(&sentences_json_path, args.model, &output_dir, args.limit).await.map_err(|e| io::Error::new(ErrorKind::Other, e.to_string()))?;
+
+    let analysis_jsonl_path = output_dir.join("analysis.jsonl");
+    html_generator::generate_html_from_jsonl(&analysis_jsonl_path, youtube_url_opt.as_deref(), &output_dir)?;
 
     println!("\nAll steps completed.");
-    println!("You can now open {} in your web browser to view the analysis.", json_file_path.with_extension("html").display());
+    println!("You can now open {} in your web browser.", output_dir.join("index.html").display());
 
     Ok(())
 }

@@ -1,124 +1,120 @@
 use serde::{Deserialize, Serialize};
-use std::fs::{self, File};
-use std::io::{self, BufRead};
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
 use std::path::Path;
 use std::time::Duration;
-use std::collections::HashMap;
+use crate::parser::Subtitle;
 
 #[derive(Serialize)]
 struct ApiRequest {
     model: String,
-    messages: Vec<Message>,
+    prompt: String,
     temperature: f32,
     stream: bool,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
-struct Message {
-    role: String,
-    content: String,
-}
-
 #[derive(Deserialize)]
 struct ApiResponse {
-    message: Option<Message>,
-    choices: Option<Vec<Choice>>,
-    #[serde(flatten)]
-    extra: std::collections::HashMap<String, serde_json::Value>,
+    response: String,
 }
 
-#[derive(Deserialize)]
-struct Choice {
-    message: Message,
+#[derive(Serialize, Deserialize)]
+pub struct AnalysisResult {
+    pub timestamp: String,
+    pub original_sentence: String,
+    pub explanation: String,
 }
 
-#[derive(Serialize)]
-struct AnalysisResult {
-    original_sentence: String,
-    explanation: String,
-}
-
-pub async fn analyze_text_file(text_file_path: &Path, model_name: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn analyze_sentences_from_json(
+    json_path: &Path,
+    model_name: Option<String>,
+    output_dir: &Path,
+    limit: Option<usize>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
+        .no_proxy()
+        .http1_only()
         .build()?;
 
-    let file = File::open(text_file_path)?;
-    let reader = io::BufReader::new(file);
+    let json_content = fs::read_to_string(json_path)?;
+    let mut subtitles: Vec<Subtitle> = serde_json::from_str(&json_content)?;
 
-    let mut results: Vec<AnalysisResult> = Vec::new(); // ここに移動
+    if let Some(l) = limit {
+        subtitles.truncate(l);
+        println!("Analyzing first {} sentences.", l);
+    }
 
-    println!("Starting analysis with LM Studio. This may take a while...");
+    let output_path = output_dir.join("analysis.jsonl");
+    fs::write(&output_path, "")?;
+    let mut output_file = OpenOptions::new().append(true).open(&output_path)?;
 
-    let actual_model_name = model_name.unwrap_or_else(|| "gemma3:27b".to_string());
+    println!("Starting analysis with Ollama (/api/generate). This may take a while...");
 
-    for (index, line) in reader.lines().enumerate() {
-        let sentence = line?;
+    let actual_model_name = model_name.unwrap_or_else(|| "gemma3:12b".to_string());
+
+    for (index, subtitle) in subtitles.iter().enumerate() {
+        let sentence = &subtitle.text;
         if sentence.trim().is_empty() {
             continue;
         }
 
         println!("Analyzing sentence {}...: \"{}\"", index + 1, &sentence);
 
-        let system_prompt = "あなたは英語文法のエキスパートです。次のセンテンスについて、まず和訳を示し、その後文法について解説してください。".to_string();
+        let system_prompt = "あなたは優秀な英文法学者です。最初に和訳を示してから、文法の解説をしてください。";
         
+        let mut full_prompt = String::new();
+        full_prompt.push_str(system_prompt);
+        full_prompt.push_str("\n\nSentence: \"");
+        full_prompt.push_str(sentence);
+        full_prompt.push('"');
+
         let request_body = ApiRequest {
             model: actual_model_name.clone(),
-            messages: vec![
-                Message { role: "system".to_string(), content: system_prompt },
-                Message { role: "user".to_string(), content: sentence.clone() },
-            ],
+            prompt: full_prompt,
             temperature: 0.7,
             stream: false,
         };
 
         let res = client
-            //.post("http://localhost:1234/v1/chat/completions")
-            .post("http://localhost:11434/api/chat")
+            .post("http://localhost:11434/api/generate")
             .json(&request_body)
             .send()
             .await;
 
-        match res {
+        let result = match res {
             Ok(response) => {
                 if response.status().is_success() {
                     let api_response = response.json::<ApiResponse>().await?;
-                    let explanation = if let Some(message) = api_response.message {
-                        message.content
-                    } else if let Some(choices) = api_response.choices {
-                        if let Some(choice) = choices.get(0) {
-                            choice.message.content.clone()
-                        } else {
-                            "No explanation received from choices.".to_string()
-                        }
-                    } else {
-                        "No explanation received (neither message nor choices found).".to_string()
-                    };
-                    results.push(AnalysisResult {
-                        original_sentence: sentence,
-                        explanation,
-                    });
+                    AnalysisResult {
+                        timestamp: subtitle.timestamp.clone(),
+                        original_sentence: sentence.clone(),
+                        explanation: api_response.response,
+                    }
                 } else {
-                     eprintln!("Error from API for sentence '{}': Status {}", sentence, response.status());
-                     results.push(AnalysisResult {
-                        original_sentence: sentence,
-                        explanation: format!("Failed to get explanation. Status: {}", response.status()),
-                    });
+                    let err_msg = format!("Failed to get explanation. Status: {}", response.status());
+                    eprintln!("Error for sentence '{}': {}", sentence, err_msg);
+                    AnalysisResult {
+                        timestamp: subtitle.timestamp.clone(),
+                        original_sentence: sentence.clone(),
+                        explanation: err_msg,
+                    }
                 }
             }
             Err(e) => {
-                eprintln!("Failed to connect to LM Studio API for sentence '{}': {}. Please ensure LM Studio is running and the server is on.", sentence, e);
-                results.push(AnalysisResult {
-                    original_sentence: sentence,
-                    explanation: format!("API connection error: {}", e),
-                });
+                let err_msg = format!("API connection error: {}", e);
+                eprintln!("Failed to connect to API for sentence '{}': {}.", sentence, e);
+                AnalysisResult {
+                    timestamp: subtitle.timestamp.clone(),
+                    original_sentence: sentence.clone(),
+                    explanation: err_msg,
+                }
             }
-        }
-    }
+        };
 
-    let output_path = text_file_path.with_extension("analysis.json");
-    let json_output = serde_json::to_string_pretty(&results)?;
-    fs::write(&output_path, json_output)?;
+        let json_line = serde_json::to_string(&result)?;
+        writeln!(output_file, "{}", json_line)?;
+    }
 
     println!("Analysis complete. Output written to {}", output_path.display());
 
