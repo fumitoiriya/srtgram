@@ -2,15 +2,15 @@
 
 ## 概要
 
-このプロジェクトは、SRT字幕ファイルまたはYouTube動画の字幕からテキストを抽出し、各文の文法をollamaを介して解析し、その結果をインタラクティブなHTMLビューアとして出力するRustアプリケーションです。
+このプロジェクトは、SRT字幕ファイルまたはYouTube動画の字幕からテキストを抽出し、各文の文法をollamaを介して解析し、その結果をインタラクティブなHTMLビューアとして出力するRustアプリケーションです。生成されるHTMLは、YouTube動画のタイトルまたはローカルファイル名をタイトルと見出しに表示します。
 
 ## 機能
 
 -   SRTファイルからタイムスタンプや行番号を除去し、整形されたテキストを抽出します。
--   YouTube動画から字幕をダウンロードする機能を追加しました。
--   抽出された各文をollamaのAPIに送信し、文法解説（日本語）を取得します。
--   取得した英文と解説をJSON形式で保存します。
--   JSON形式の解析結果を、クリックで解説の表示/非表示を切り替えられるインタラクティブなHTMLページとして出力します。
+-   YouTube動画から字幕をダウンロードし、そのタイトルを取得する機能を追加しました。
+-   抽出された各文をollamaのAPIに送信し、日本語での文法解説を取得します。
+-   取得した英文と解説をJSONL形式で保存します。
+-   JSONL形式の解析結果を、クリックで解説の表示/非表示を切り替えられるインタラクティブなHTMLページとして出力します。このHTMLページのタイトルと見出し（`<h1>`タグ）は、YouTube動画の場合はそのタイトル、ローカルファイルの場合はファイル名を表示します。
 
 ## 必要要件
 
@@ -18,9 +18,9 @@
     -   [Rust公式ウェブサイト](https://www.rust-lang.org/tools/install) からインストールできます。
 -   **ollama**: 文法解析にはollamaが必要です。
     -   `curl -fsSL https://ollama.com/install.sh | sh`でインストールしてください。
-    -   ollamaでモデルをロードし、APIサーバー（通常 `http://localhost:11434`）を起動しておく必要があります（上記でインストールすると自動的にサービスが登録されてるはず）。
--   **yt-dlp**: YouTube字幕のダウンロード機能を使用する場合に必要です。
-    -   [yt-dlp GitHubリポジトリ](https://github.com/yt-dlp/yt-dlp) からインストールできます（例: `pip install yt-dlp` または `sudo apt install yt-dlp`）。
+    -   ollamaでモデルをロードし、APIサーバー（通常 `http://localhost:11434`）を起動しておく必要があります。デフォルトのモデルは `gemma3:12b` ですが、`-m` オプションで変更可能です。
+-   **yt-dlp**: YouTube字幕のダウンロードおよび動画タイトルの取得機能を使用する場合に必要です。
+    -   [yt-dlp GitHubリポジリ](https://github.com/yt-dlp/yt-dlp) からインストールできます（例: `pip install yt-dlp` または `sudo apt install yt-dlp`）。
 
 ## セットアップ
 
@@ -44,46 +44,40 @@
     ### ローカルSRTファイルを処理する場合 (`-l` オプション)
 
     ```bash
-    srtgram -l <ローカルSRTファイルのパス>
+    srtgram -l <ローカルSRTファイルのパス> [-m <モデル名>] [--limit <解析する文の数>]
     ```
     例:
     ```bash
-    srtgram -l captions.srt
+    srtgram -l captions.srt -m gemma3:12b --limit 10
     ```
     (もし `srt_processor` ディレクトリから実行する場合は、`../captions.srt` のように相対パスを指定します。)
 
     ### YouTube動画の字幕を処理する場合 (`-y` オプション)
 
     ```bash
-    srtgram -y <YouTube動画のURL>
+    srtgram -y <YouTube動画のURL> [-m <モデル名>] [--limit <解析する文の数>]
     ```
     例:
     ```bash
-    srtgram -y https://www.youtube.com/watch?v=zYKJdzyAviE
+    srtgram -y https://www.youtube.com/watch?v=zYKJdzyAviE -m llama3 --limit 5
     ```
 
 ### 出力ファイル
 
-プログラムの実行後、入力SRTファイル（またはダウンロードされた字幕ファイル）と同じディレクトリに以下のファイルが生成されます。
+プログラムの実行後、一意に作成された出力ディレクトリ内に以下のファイルが生成されます。
 
--   `<input_file_base_name>.txt`: 整形された字幕テキスト（各文が1行）。
--   `<input_file_base_name>.analysis.json`: ollamaによる文法解析結果を格納したJSONファイル。
--   `<input_file_base_name>.analysis.html`: 解析結果をインタラクティブに表示するHTMLビューア。
+-   `sentences.json`: SRTファイルから抽出された各文とタイムスタンプを格納したJSONファイル。
+-   `analysis.jsonl`: ollamaによる文法解析結果（元の文、タイムスタンプ、解説）をJSONL形式で格納したファイル。
+-   `index.html`: 解析結果をインタラクティブに表示するHTMLビューア。このHTMLファイルのタイトルと見出し（`<h1>`タグ）は、YouTube動画の場合はそのタイトル、ローカルファイルの場合はファイル名を表示します。
+-   `thumbnail.png`: YouTube動画の場合、動画のサムネイルが保存されます。
 
 ## プロジェクト構造
 
--   `src/main.rs`: コマンドラインインターフェースのエントリーポイント。`parser`, `analyzer`, `html_generator`, `youtube_downloader` モジュールを統合し、全体の処理フローを管理します。
--   `src/parser.rs`: SRTファイルを読み込み、整形されたテキストを抽出する機能を提供します。
--   `src/analyzer.rs`: 整形されたテキストをollama APIに送信し、文法解説を取得してJSONを生成する機能を提供します。
--   `src/html_generator.rs`: JSON形式の解析結果を読み込み、MarkdownをHTMLに変換してインタラクティブなHTMLビューアを生成する機能を提供します。
--   **`src/youtube_downloader.rs`**: YouTube動画から字幕をダウンロードする機能を提供します。
-
-## 今後の改善点
-
--   ollama APIのエンドポイントやモデル名をコマンドライン引数で指定できるようにする。
--   エラーハンドリングの強化。
--   より高度なテキスト前処理（例: 句読点の正規化）。
--   UIの改善（例: 検索、フィルタリング機能）。
+-   `src/main.rs`: コマンドラインインターフェースのエントリーポイント。`clap`クレートを使用して引数を解析し、`parser`, `analyzer`, `html_generator`, `youtube_downloader` モジュールを統合して、SRT処理とHTML生成の全体のフローを管理します。
+-   `src/parser.rs`: SRTファイルを読み込み、タイムスタンプとテキストを抽出し、各文に分割します。結果は `sentences.json` として出力されます。
+-   `src/analyzer.rs`: `sentences.json` を読み込み、各文をOllama API (`http://localhost:11434/api/generate`) に送信して日本語での文法解説を取得します。結果は `analysis.jsonl` として出力されます。
+-   `src/html_generator.rs`: `analysis.jsonl` を読み込み、`pulldown-cmark` を使用してMarkdown形式の解説をHTMLに変換し、インタラクティブなHTMLビューア (`index.html`) を生成します。YouTube動画が処理された場合は、動画埋め込みとサムネイル表示も行います。
+-   `src/youtube_downloader.rs`: `yt-dlp` ツールを使用してYouTube動画の字幕をダウンロードし、動画のタイトルを取得する機能を提供します。
 
 ## ライセンス
 

@@ -8,11 +8,12 @@ pub async fn download_youtube_subtitles(url: &str, output_dir: &Path) -> io::Res
     // yt-dlpにファイル名を完全に任せるため、-oオプションはテンプレートを使う
     // -Pでディレクトリを指定し、-oでシンプルなファイル名テンプレートを使う
     let output_template = "subtitle"; // yt-dlpが拡張子を付与する
+    let lang = "en";
 
     let output = Command::new("yt-dlp")
         .arg("--write-auto-subs") // User's fix
         .arg("--sub-lang")
-        .arg("en")
+        .arg(lang)
         .arg("--sub-format")
         .arg("srt")
         .arg("--skip-download") // Keep this
@@ -28,31 +29,23 @@ pub async fn download_youtube_subtitles(url: &str, output_dir: &Path) -> io::Res
         return Err(io::Error::new(io::ErrorKind::Other, "yt-dlp failed to download subtitles."));
     }
 
-    let stdout_str = String::from_utf8_lossy(&output.stdout);
-    let mut final_srt_path = PathBuf::new(); // Initialize as empty
-
-    // stdoutから "Destination: " の行を探し、ファイル名を抽出する
-    for line in stdout_str.lines() {
-        if line.contains("Destination:") && line.contains(".srt") {
-            if let Some(start_index) = line.find("Destination: ") {
-                let file_name_str = line[start_index + "Destination: ".len()..].trim();
-
-                break;
-            }
-        }
-    }
-
-    // もしstdoutからファイル名が抽出できなかった場合、デフォルトのパスを試す
-    if final_srt_path.as_os_str().is_empty() {
-        final_srt_path = output_dir.join("subtitle.srt"); // Fallback to expected name
-        // もしそれでも見つからなければ、subtitle.en.srtも試す
-        if !final_srt_path.exists() {
-            final_srt_path = output_dir.join("subtitle.en.srt");
-        }
-    }
-
+    let final_srt_path =  output_dir.join(format!("{}.{}.srt",output_template, lang));
 
     println!("Subtitles downloaded to: {}", final_srt_path.display());
 
     Ok(final_srt_path)
+}
+
+pub async fn get_youtube_video_title(url: &str) -> io::Result<String> {
+    let output = Command::new("yt-dlp")
+        .arg("--get-title")
+        .arg(url)
+        .output()?;
+
+    if !output.status.success() {
+        eprintln!("yt-dlp failed to get title:\nStdout: {}\nStderr: {}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        return Err(io::Error::new(io::ErrorKind::Other, "yt-dlp failed to get video title."));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }

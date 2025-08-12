@@ -1,9 +1,8 @@
 use clap::Parser;
 use regex::Regex;
-use std::env;
 use std::fs;
 use std::io::{self, ErrorKind};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 mod analyzer;
 mod html_generator;
@@ -64,14 +63,16 @@ async fn main() -> io::Result<()> {
     let output_dir = create_output_directory(&base_name)?;
     println!("Output will be saved in: {}", output_dir.display());
 
-    let (srt_path, youtube_url_opt) = if let Some(local_file) = &args.local_file {
+    let (srt_path, youtube_url_opt, html_title) = if let Some(local_file) = &args.local_file {
         let path = PathBuf::from(local_file);
         let new_srt_path = output_dir.join(path.file_name().unwrap());
         fs::copy(&path, &new_srt_path)?;
-        (new_srt_path, None)
+        let title = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+        (new_srt_path, None, title)
     } else if let Some(youtube_url) = &args.youtube_url {
         let downloaded_srt_path = youtube_downloader::download_youtube_subtitles(youtube_url, &output_dir).await?;
-        (downloaded_srt_path, Some(youtube_url.clone()))
+        let title = youtube_downloader::get_youtube_video_title(youtube_url).await?;
+        (downloaded_srt_path, Some(youtube_url.clone()), title)
     } else {
         // This branch is technically unreachable due to the check above, but included for completeness
         return Err(io::Error::new(ErrorKind::InvalidInput, "No input specified."));
@@ -83,7 +84,7 @@ async fn main() -> io::Result<()> {
     analyzer::analyze_sentences_from_json(&sentences_json_path, args.model, &output_dir, args.limit).await.map_err(|e| io::Error::new(ErrorKind::Other, e.to_string()))?;
 
     let analysis_jsonl_path = output_dir.join("analysis.jsonl");
-    html_generator::generate_html_from_jsonl(&analysis_jsonl_path, youtube_url_opt.as_deref(), &output_dir)?;
+    html_generator::generate_html_from_jsonl(&analysis_jsonl_path, youtube_url_opt.as_deref(), &output_dir, &html_title)?;
 
     println!("\nAll steps completed.");
     println!("You can now open {} in your web browser.", output_dir.join("index.html").display());
