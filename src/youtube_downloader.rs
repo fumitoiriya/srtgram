@@ -14,7 +14,7 @@ pub async fn download_youtube_subtitles(url: &str, output_dir: &Path) -> io::Res
         .arg("--write-auto-subs") // User's fix
         .arg("--sub-lang")
         .arg(lang)
-        .arg("--sub-format")
+        .arg("--convert-subtitles")
         .arg("srt")
         .arg("--skip-download") // Keep this
         .arg("-P") // Specify output directory
