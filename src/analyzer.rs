@@ -11,6 +11,7 @@ struct ApiRequest {
     prompt: String,
     temperature: f32,
     stream: bool,
+    format: String,
 }
 
 #[derive(Deserialize)]
@@ -22,10 +23,18 @@ struct ApiResponse {
     eval_duration: Option<u64>,
 }
 
+// For parsing the JSON string within the response
+#[derive(Serialize, Deserialize)]
+struct LlmJsonResponse {
+    translation: String,
+    explanation: String,
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct AnalysisResult {
     pub timestamp: String,
     pub original_sentence: String,
+    pub translation: String,
     pub explanation: String,
 }
 
@@ -65,7 +74,7 @@ pub async fn analyze_sentences_from_json(
 
         println!("Analyzing sentence {}...: \"{}\"", index + 1, &sentence);
 
-        let system_prompt = "あなたは優秀な英文法学者です。最初に和訳を示してから、文法の解説をしてください。";
+        let system_prompt = r###"あなたは優秀な英文法学者です。以下のJSON形式で、提供された英文の和訳と文法解説を日本語で生成してください。explanationフィールドにはマークダウンを使用してください。\n{ \"translation\": \"<ここに和訳>\", \"explanation\": \"<ここに文法解説>\" }"###;
         
         let mut full_prompt = String::new();
         full_prompt.push_str(system_prompt);
@@ -78,6 +87,7 @@ pub async fn analyze_sentences_from_json(
             prompt: full_prompt,
             temperature: 0.7,
             stream: false,
+            format: "json".to_string(),
         };
 
         let start_time = Instant::now();
@@ -105,10 +115,25 @@ pub async fn analyze_sentences_from_json(
                         println!("  Tokens/s: N/A (eval_count or eval_duration not available)");
                     }
 
-                    AnalysisResult {
-                        timestamp: subtitle.timestamp.clone(),
-                        original_sentence: sentence.clone(),
-                        explanation: api_response.response,
+                    // Parse the JSON string from the response
+                    match serde_json::from_str::<LlmJsonResponse>(&api_response.response) {
+                        Ok(llm_json) => AnalysisResult {
+                            timestamp: subtitle.timestamp.clone(),
+                            original_sentence: sentence.clone(),
+                            translation: llm_json.translation,
+                            explanation: llm_json.explanation,
+                        },
+                        Err(e) => {
+                            let err_msg = format!("Failed to parse LLM JSON response: {}", e);
+                            eprintln!("Error for sentence '{}': {}", sentence, err_msg);
+                            // Save the raw response for debugging
+                            AnalysisResult {
+                                timestamp: subtitle.timestamp.clone(),
+                                original_sentence: sentence.clone(),
+                                translation: "Error: Failed to parse LLM response.".to_string(),
+                                explanation: api_response.response,
+                            }
+                        }
                     }
                 } else {
                     let err_msg = format!("Failed to get explanation. Status: {}", response.status());
@@ -116,6 +141,7 @@ pub async fn analyze_sentences_from_json(
                     AnalysisResult {
                         timestamp: subtitle.timestamp.clone(),
                         original_sentence: sentence.clone(),
+                        translation: "Error: API request failed.".to_string(),
                         explanation: err_msg,
                     }
                 }
@@ -126,6 +152,7 @@ pub async fn analyze_sentences_from_json(
                 AnalysisResult {
                     timestamp: subtitle.timestamp.clone(),
                     original_sentence: sentence.clone(),
+                    translation: "Error: API connection failed.".to_string(),
                     explanation: err_msg,
                 }
             }

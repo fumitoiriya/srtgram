@@ -70,12 +70,16 @@ pub fn generate_html_from_jsonl(
 
             format!(
                 r###"                <div class="entry" data-timestamp-sec="{}">
-                    <div class="sentence"><span class="timestamp">{}</span><span class="original-text">{}</span></div>
+                    <div class="sentence">
+                        <div><span class="timestamp">{}</span><span class="original-text">{}</span></div>
+                        <div class="japanese-translation">{}</div>
+                    </div>
                     <div class="explanation">{}</div>
                 </div>"###,
                 timestamp_sec,
                 escape_html(&item.timestamp),
                 escape_html(&item.original_sentence),
+                escape_html(&item.translation),
                 explanation_html
             )
         })
@@ -218,6 +222,13 @@ pub fn generate_html_from_jsonl(
         .explanation blockquote {{ padding: 0 1em; color: #6a737d; border-left: 0.25em solid #dfe2e5; }}
         .timestamp {{ font-size: 0.8rem; color: #888; margin-right: 12px; font-weight: normal; background-color: #f0f0f0; padding: 2px 6px; border-radius: 4px; }}
         .original-text {{ font-weight: bold; }}
+        .japanese-translation {{
+            font-size: 0.9em;
+            color: #555;
+            font-weight: normal;
+            margin-top: 5px;
+            text-indent: 6.5rem;
+        }}
     </style>
 </head>
 <body>
