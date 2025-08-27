@@ -85,7 +85,7 @@ pub async fn analyze_sentences_from_json(
         let request_body = ApiRequest {
             model: actual_model_name.clone(),
             prompt: full_prompt,
-            temperature: 0.5,
+            temperature: 0.3,
             stream: false,
             format: "json".to_string(),
         };
