@@ -74,7 +74,7 @@ pub async fn analyze_sentences_from_json(
 
         println!("Analyzing sentence {}...: \"{}\"", index + 1, &sentence);
 
-        let system_prompt = r###"あなたは優秀な英文法学者です。以下のJSON形式で、提供された英文の和訳と文法解説を日本語で生成してください。explanationフィールドにはマークダウンを使用してください。\n{ \"translation\": \"<ここに和訳>\", \"explanation\": \"<ここに文法解説>\" }"###;
+        let system_prompt = r###"あなたは優秀な英文法学者です。以下のJSON形式で、提供された英文の和訳と文法解説を日本語で生成してください。explanationフィールドにはマークダウンを使用してください。\n{ \"translation\": \"<ここに和訳>\", \"explanation\": \"<ここに文法解説>\" }\n最終応答は、"{"で始まり"}"で終わるJSONのみを出力し、JSON以外の文字は一切応答に含めないでください。"###;
         
         let mut full_prompt = String::new();
         full_prompt.push_str(system_prompt);
@@ -85,7 +85,7 @@ pub async fn analyze_sentences_from_json(
         let request_body = ApiRequest {
             model: actual_model_name.clone(),
             prompt: full_prompt,
-            temperature: 0.7,
+            temperature: 0.5,
             stream: false,
             format: "json".to_string(),
         };
