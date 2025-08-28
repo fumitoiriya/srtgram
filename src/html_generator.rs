@@ -126,6 +126,10 @@ pub fn generate_html_from_jsonl(
             height: 100vh;
         }}
         #video-container {{
+            position: -webkit-sticky;
+            position: sticky;
+            top: 0;
+            z-index: 1;
             display: flex;
             justify-content: center;
             align-items: center;
